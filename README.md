@@ -1,4 +1,7 @@
+# Tranporter_ICHIRO
 # ESP32 Transporter Control System with WiFi Web Server
+
+Robot transporter dengan sistem kontrol ESP32 yang dilengkapi dengan sensor dan web interface.
 
 ## Deskripsi
 Sistem kontrol ESP32 yang dilengkapi dengan:
