@@ -1,15 +1,17 @@
 /*ESP32 Transporter Control System with WiFi Web Server
  * Combined sensor reading (GY-25 gyroscope, TCS34725 color sensor)
+ * Analog sensor reading with multiplexer (16 sensors)
+ * Servo control
  * Motor control with encoder feedback
  * WiFi web server for monitoring and control
  */
 #include <Adafruit_TCS34725.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <ESP32Servo.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
-
 
 // WiFi credentials - ganti dengan WiFi Anda
 const char *ssid = "Robotika@test";
@@ -17,6 +19,39 @@ const char *password = "12345678";
 
 // Web server instance
 WebServer server(80);
+
+// Analog sensor multiplexer pins and configuration
+const int ANALOG_PINS[] = {36, 39, 34, 35}; // 4 analog input pins
+const int IN1_PIN = 33;                     // Multiplexer control pin 1
+const int IN2_PIN = 32;                     // Multiplexer control pin 2
+const int NUM_ANALOG_PINS = 4;
+const int NUM_MUX_CHANNELS = 4;
+const int TOTAL_SENSORS = 16;
+
+// Sensor mapping for multiplexer
+const int SENSOR_MAP[4][4] = {
+    {6, 8, 14,
+     3}, // Channel 0 (00): analog1=S6, analog2=S8, analog3=S14, analog4=S3
+    {5, 11, 13,
+     0}, // Channel 1 (01): analog1=S5, analog2=S11, analog3=S13, analog4=S0
+    {4, 9, 12,
+     2}, // Channel 2 (10): analog1=S4, analog2=S9, analog3=S12, analog4=S2
+    {7, 10, 15,
+     1} // Channel 3 (11): analog1=S7, analog2=S10, analog3=S15, analog4=S1
+};
+
+// Servo pins and objects
+const int SERVO1_PIN = 13; // Servo 1 pin
+const int SERVO2_PIN = 12; // Servo 2 pin
+Servo servo1;
+Servo servo2;
+
+// Analog sensor values storage
+int sensorValues[16] = {0};
+
+// Servo control variables
+int servo1Angle = 90; // Default center position
+int servo2Angle = 90; // Default center position
 
 // Manual motor control variables
 bool manualMode = false;
@@ -190,6 +225,13 @@ void handleRoot() {
             </div>
         </div>
 
+        <div class="section">
+            <h2>Analog Sensors (16 channels)</h2>
+            <div id="analogSensors" class="sensor-grid">
+                <!-- Analog sensors will be populated by JavaScript -->
+            </div>
+        </div>
+
         <div class="section" id="manualControl" style="display:none;">
             <h2>Manual Motor Control</h2>
             <div class="motor-control">
@@ -202,6 +244,22 @@ void handleRoot() {
                     <label>Motor 2:</label>
                     <input type="range" id="motor2" class="slider" min="-100" max="100" value="0" onchange="updateMotor(2, this.value)">
                     <span id="motor2Value">0</span>%
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Servo Control</h2>
+            <div class="motor-control">
+                <div class="slider-container">
+                    <label>Servo 1 Angle:</label>
+                    <input type="range" id="servo1" class="slider" min="0" max="180" value="90" onchange="updateServo(1, this.value)">
+                    <span id="servo1Value">90</span>°
+                </div>
+                <div class="slider-container">
+                    <label>Servo 2 Angle:</label>
+                    <input type="range" id="servo2" class="slider" min="0" max="180" value="90" onchange="updateServo(2, this.value)">
+                    <span id="servo2Value">90</span>°
                 </div>
             </div>
         </div>
@@ -224,6 +282,26 @@ void handleRoot() {
                     document.getElementById('enc1').textContent = data.enc1;
                     document.getElementById('enc2').textContent = data.enc2;
                     document.getElementById('motorState').textContent = data.motorState;
+                    
+                    // Update analog sensors
+                    const analogContainer = document.getElementById('analogSensors');
+                    if (data.analogSensors) {
+                        let analogHTML = '';
+                        for (let i = 0; i < data.analogSensors.length; i++) {
+                            analogHTML += `<div class="sensor-item">S${i}: ${data.analogSensors[i]}</div>`;
+                        }
+                        analogContainer.innerHTML = analogHTML;
+                    }
+                    
+                    // Update servo positions
+                    if (data.servo1Angle !== undefined) {
+                        document.getElementById('servo1').value = data.servo1Angle;
+                        document.getElementById('servo1Value').textContent = data.servo1Angle;
+                    }
+                    if (data.servo2Angle !== undefined) {
+                        document.getElementById('servo2').value = data.servo2Angle;
+                        document.getElementById('servo2Value').textContent = data.servo2Angle;
+                    }
                     
                     const status = document.getElementById('status');
                     status.textContent = `Mode: ${data.mode} | Connected`;
@@ -251,6 +329,15 @@ void handleRoot() {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({motor: motor, speed: parseInt(value)})
+            });
+        }
+
+        function updateServo(servo, value) {
+            document.getElementById(`servo${servo}Value`).textContent = value;
+            fetch('/setServo', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({servo: servo, angle: parseInt(value)})
             });
         }
 
@@ -310,7 +397,7 @@ void handleData() {
     break;
   }
 
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(2048); // Increased size for analog sensor data
   doc["roll"] = Roll;
   doc["pitch"] = Pitch;
   doc["yaw"] = Yaw;
@@ -328,6 +415,16 @@ void handleData() {
   doc["mode"] = manualMode ? "Manual" : "Auto";
   doc["motor1Speed"] = manualMotor1Speed;
   doc["motor2Speed"] = manualMotor2Speed;
+
+  // Add analog sensor data
+  JsonArray sensors = doc.createNestedArray("analogSensors");
+  for (int i = 0; i < 16; i++) {
+    sensors.add(sensorValues[i]);
+  }
+
+  // Add servo data
+  doc["servo1Angle"] = servo1Angle;
+  doc["servo2Angle"] = servo2Angle;
 
   String json;
   serializeJson(doc, json);
@@ -374,6 +471,31 @@ void handleSetMotor() {
   }
 }
 
+void handleSetServo() {
+  if (server.hasArg("plain")) {
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, server.arg("plain"));
+
+    int servo = doc["servo"];
+    int angle = doc["angle"];
+
+    // Constrain angle to valid range
+    angle = constrain(angle, 0, 180);
+
+    if (servo == 1) {
+      servo1Angle = angle;
+      servo1.write(servo1Angle);
+    } else if (servo == 2) {
+      servo2Angle = angle;
+      servo2.write(servo2Angle);
+    }
+
+    server.send(200, "text/plain", "OK");
+  } else {
+    server.send(400, "text/plain", "Invalid request");
+  }
+}
+
 void handleEmergencyStop() {
   manualMotor1Speed = 0;
   manualMotor2Speed = 0;
@@ -387,6 +509,43 @@ void handleEmergencyStop() {
   ledcWrite(LEDC_CHANNEL_B, 0);
 
   server.send(200, "text/plain", "Emergency stop activated");
+}
+
+// Analog sensor and servo functions
+void setMuxChannel(int channel) {
+  switch (channel) {
+  case 0: // 00
+    digitalWrite(IN1_PIN, LOW);
+    digitalWrite(IN2_PIN, LOW);
+    break;
+  case 1: // 01
+    digitalWrite(IN1_PIN, LOW);
+    digitalWrite(IN2_PIN, HIGH);
+    break;
+  case 2: // 10
+    digitalWrite(IN1_PIN, HIGH);
+    digitalWrite(IN2_PIN, LOW);
+    break;
+  case 3: // 11
+    digitalWrite(IN1_PIN, HIGH);
+    digitalWrite(IN2_PIN, HIGH);
+    break;
+  }
+  delayMicroseconds(100); // Small delay for multiplexer switching
+}
+
+void readAllSensors() {
+  // Read all sensors and store in array
+  for (int muxChannel = 0; muxChannel < NUM_MUX_CHANNELS; muxChannel++) {
+    setMuxChannel(muxChannel);
+    delay(10); // Allow multiplexer to switch
+
+    for (int pin = 0; pin < NUM_ANALOG_PINS; pin++) {
+      int sensorValue = analogRead(ANALOG_PINS[pin]);
+      int sensorNumber = SENSOR_MAP[muxChannel][pin]; // Use mapping table
+      sensorValues[sensorNumber] = sensorValue;       // Store by sensor number
+    }
+  }
 }
 
 void setupWiFi() {
@@ -408,6 +567,7 @@ void setupWebServer() {
   server.on("/data", handleData);
   server.on("/toggleMode", HTTP_POST, handleToggleMode);
   server.on("/setMotor", HTTP_POST, handleSetMotor);
+  server.on("/setServo", HTTP_POST, handleSetServo);
   server.on("/emergencyStop", HTTP_POST, handleEmergencyStop);
 
   server.begin();
@@ -510,6 +670,20 @@ void setup() {
     Serial.println("TCS34725 not found. Check wiring.");
   }
 
+  // Initialize analog sensor multiplexer pins
+  pinMode(IN1_PIN, OUTPUT);
+  pinMode(IN2_PIN, OUTPUT);
+  digitalWrite(IN1_PIN, LOW);
+  digitalWrite(IN2_PIN, LOW);
+
+  // Initialize servos
+  servo1.attach(SERVO1_PIN);
+  servo2.attach(SERVO2_PIN);
+  servo1.write(90); // Center position
+  servo2.write(90); // Center position
+
+  Serial.println("Analog sensors and servos initialized");
+
   // Put sensor into correction mode briefly, then into query mode
   Serial2.write(0xA5);
   Serial2.write(0x54); // correction mode
@@ -582,6 +756,13 @@ void loop() {
     lastColorMillis = now;
   }
 
+  // Read analog sensors periodically
+  static unsigned long lastAnalogRead = 0;
+  if (now - lastAnalogRead >= 100) { // Read analog sensors every 100ms
+    readAllSensors();
+    lastAnalogRead = now;
+  }
+
   // Consolidated serial output - print all data at once
   static unsigned long lastPrint = 0;
   if (now - lastPrint >= 50) {
@@ -620,6 +801,23 @@ void loop() {
     Serial.print(enc2);
     Serial.print(" Dir:");
     Serial.print(dir2 == 1 ? "CW" : (dir2 == -1 ? "CCW" : "STOP"));
+
+    // Analog sensor data (condensed - show first few sensors)
+    Serial.print(" | Sensors S0:");
+    Serial.print(sensorValues[0]);
+    Serial.print(" S1:");
+    Serial.print(sensorValues[1]);
+    Serial.print(" S2:");
+    Serial.print(sensorValues[2]);
+    Serial.print(" S3:");
+    Serial.print(sensorValues[3]);
+
+    // Servo positions
+    Serial.print(" | Servo1:");
+    Serial.print(servo1Angle);
+    Serial.print("° Servo2:");
+    Serial.print(servo2Angle);
+    Serial.print("°");
 
     // Motor state
     Serial.print(" | Mode:");
