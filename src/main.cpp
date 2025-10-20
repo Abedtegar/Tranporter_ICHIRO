@@ -68,12 +68,12 @@ int enc_b2 = 25;
 int enc2 = 0;
 int dir2 = 0;
 
-int en1 = 23;
-int en2 = 19;
+int en1 = 5;
+int en2 = 2;
 int in1 = 18;
-int in2 = 5;
-int in3 = 4;
-int in4 = 2;
+int in2 = 19;
+int in3 = 23;
+int in4 = 4;
 // PWM / motor control settings (ESP32 LEDC)
 const int LEDC_CHANNEL_A = 0;
 const int LEDC_CHANNEL_B = 1;
@@ -647,13 +647,13 @@ void setup() {
   pinMode(enc_b2, INPUT_PULLUP);
 
   attachInterrupt(digitalPinToInterrupt(enc_a1), handleEncoderA1_Rising,
-                  RISING);
+                  FALLING);
   attachInterrupt(digitalPinToInterrupt(enc_b1), handleEncoderB1_Rising,
-                  RISING);
+                  FALLING);
   attachInterrupt(digitalPinToInterrupt(enc_a2), handleEncoderA2_Rising,
-                  RISING);
+                  FALLING);
   attachInterrupt(digitalPinToInterrupt(enc_b2), handleEncoderB2_Rising,
-                  RISING);
+                  FALLING);
 
   // Initialize Serial2 for GY-25 on RX2/TX2 pins
   Serial2.begin(115200, SERIAL_8N1, RXPin, TXPin);
